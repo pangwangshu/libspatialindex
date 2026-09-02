@@ -843,8 +843,11 @@ void Node::rstarSplit(uint32_t dataLength, uint8_t* pData, Region& mbr, id_type 
 
 		double margin = std::min(marginl, marginh);
 
-		// keep minimum margin as split axis.
-		if (margin < minimumMargin)
+		// Keep minimum margin as split axis. Combining otherwise-finite
+		// child MBRs can still overflow marginl/marginh to infinity; the
+		// first dimension is always accepted so splitAxis/sortOrder never
+		// stay at their sentinel values in that case (see #107/#303).
+		if (cDim == 0 || margin < minimumMargin)
 		{
 			minimumMargin = margin;
 			splitAxis = cDim;
@@ -891,7 +894,10 @@ void Node::rstarSplit(uint32_t dataLength, uint8_t* pData, Region& mbr, id_type 
 
 		double o = bb1.getIntersectingArea(bb2);
 
-		if (o < mo)
+		// As above, overlap/area can overflow to infinity for otherwise
+		// finite input; always accept the first distribution so splitPoint
+		// never stays at its sentinel value.
+		if (u32Child == 1 || o < mo)
 		{
 			splitPoint = u32Child;
 			mo = o;

@@ -228,3 +228,32 @@ TEST(RTreeTest, PoisonedInsertAmongNormalDataIsRejectedBeforeAnySplit) {
 
     EXPECT_TRUE(tree->isIndexValid());
 }
+
+// Follow-up regression for #107 / PR #303: rejecting non-finite *input*
+// coordinates isn't enough. Combining otherwise-finite, zero-area point MBRs
+// during a split can still overflow the *derived* margin/overlap metrics to
+// infinity, which leaves Node::rstarSplit() unable to find a margin/overlap
+// smaller than its sentinel initial value. That left splitAxis/splitPoint at
+// their uint32_t sentinels, later used to index Region::m_pLow/m_pHigh --
+// the same out-of-bounds crash, without any non-finite input ever entering
+// the tree.
+TEST(RTreeTest, SplitStaysSafeWhenAggregateMarginOverflowsToInfinity) {
+    std::unique_ptr<SpatialIndex::IStorageManager> storage = sidx_test::memoryStorage();
+    SpatialIndex::id_type indexIdentifier;
+    std::unique_ptr<SpatialIndex::ISpatialIndex> tree(
+        SpatialIndex::RTree::createNewRTree(
+            *storage, 0.7, 4, 4, 2, SpatialIndex::RTree::RV_RSTAR, indexIdentifier));
+
+    const double m = std::numeric_limits<double>::max() / 4.0;
+    double points[5][2] = {
+        {-m, -m}, {m, m}, {0.0, 0.0}, {1.0, 1.0}, {2.0, 2.0},
+    };
+
+    for (SpatialIndex::id_type i = 0; i < 5; ++i) {
+        double p[2] = { points[i][0], points[i][1] };
+        SpatialIndex::Region r(p, p, 2);
+        EXPECT_NO_THROW(tree->insertData(0, nullptr, r, i));
+    }
+
+    EXPECT_TRUE(tree->isIndexValid());
+}
