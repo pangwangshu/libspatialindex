@@ -257,3 +257,65 @@ TEST(RTreeTest, SplitStaysSafeWhenAggregateMarginOverflowsToInfinity) {
 
     EXPECT_TRUE(tree->isIndexValid());
 }
+
+// Same root cause as the test above, but on the *other* selection loops that
+// pick an entry by comparison. Once a child MBR is wide enough that its area
+// overflows to infinity, an enlargement computed as `combined - original`
+// becomes inf - inf = NaN. NaN fails every comparison, so:
+//
+//   * Index::findLeastEnlargement() returned its uint32_t sentinel, which
+//     chooseSubtree() then used to index m_pIdentifier (assert in debug
+//     builds, out-of-bounds read in release builds),
+//   * Index::findLeastOverlap() left `best` null and dereferenced it,
+//   * Node::rtreeSplit() left `sel` uninitialized and used it to index,
+//   * Node::pickSeeds() left both seed indices unassigned.
+//
+// Insert enough entries after the overflowing ones to build a tree deep
+// enough for chooseSubtree() to reach findLeastEnlargement() (level >= 2).
+static void insertOverflowingThenOrdinaryPoints(
+    SpatialIndex::RTree::RTreeVariant variant, double fillFactor) {
+    std::unique_ptr<SpatialIndex::IStorageManager> storage = sidx_test::memoryStorage();
+    SpatialIndex::id_type indexIdentifier;
+    std::unique_ptr<SpatialIndex::ISpatialIndex> tree(
+        SpatialIndex::RTree::createNewRTree(
+            *storage, fillFactor, 4, 4, 2, variant, indexIdentifier));
+
+    const double m = std::numeric_limits<double>::max() / 4.0;
+    auto insertPoint = [&tree](SpatialIndex::id_type id, double x, double y) {
+        double p[2] = { x, y };
+        SpatialIndex::Region r(p, p, 2);
+        tree->insertData(0, nullptr, r, id);
+    };
+
+    // Two points far enough apart that any MBR covering both has an area that
+    // overflows to infinity, even though every coordinate is finite.
+    EXPECT_NO_THROW(insertPoint(0, -m, -m));
+    EXPECT_NO_THROW(insertPoint(1, m, m));
+
+    for (SpatialIndex::id_type i = 2; i < 200; ++i) {
+        EXPECT_NO_THROW(insertPoint(i, static_cast<double>(i), static_cast<double>(i)));
+    }
+
+    // Keep mixing in overflowing entries so later splits and subtree choices
+    // go on seeing non-finite aggregates.
+    for (SpatialIndex::id_type i = 200; i < 260; ++i) {
+        double s = (i % 3 == 0) ? m : static_cast<double>(i);
+        EXPECT_NO_THROW(insertPoint(i, s, -s));
+    }
+
+    EXPECT_TRUE(tree->isIndexValid());
+}
+
+TEST(RTreeTest, SubtreeChoiceStaysSafeWhenAggregateAreaOverflows) {
+    insertOverflowingThenOrdinaryPoints(SpatialIndex::RTree::RV_RSTAR, 0.7);
+}
+
+// RV_LINEAR/RV_QUADRATIC go through rtreeSplit()/pickSeeds() instead, and
+// require a fill factor below 0.5.
+TEST(RTreeTest, LinearSplitStaysSafeWhenAggregateAreaOverflows) {
+    insertOverflowingThenOrdinaryPoints(SpatialIndex::RTree::RV_LINEAR, 0.4);
+}
+
+TEST(RTreeTest, QuadraticSplitStaysSafeWhenAggregateAreaOverflows) {
+    insertOverflowingThenOrdinaryPoints(SpatialIndex::RTree::RV_QUADRATIC, 0.4);
+}
